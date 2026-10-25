@@ -1,0 +1,190 @@
+import streamlit as st
+import pandas as pd
+import plotly.express as px
+from pathlib import Path
+
+st.set_page_config(
+    page_title="Sales Performance Dashboard",
+    page_icon="📊",
+    layout="wide"
+)
+
+st.title("📊 Sales Performance Dashboard")
+st.caption("Interactive sales analytics | Excel + Python + Streamlit + Plotly")
+
+# ---------- Load data ----------
+DEFAULT_FILE = Path(__file__).with_name("Sales_Performance_Dashboard_Practice.xlsx")
+
+@st.cache_data
+def load_data(uploaded_file=None):
+    if uploaded_file is not None:
+        data = pd.read_excel(uploaded_file, sheet_name="SalesData")
+    elif DEFAULT_FILE.exists():
+        data = pd.read_excel(DEFAULT_FILE, sheet_name="SalesData")
+    else:
+        return None
+
+    data.columns = data.columns.str.strip()
+    data["OrderDate"] = pd.to_datetime(data["OrderDate"], errors="coerce")
+    numeric_cols = ["Quantity", "UnitPrice", "UnitCost", "Sales", "TotalCost", "Profit"]
+    for col in numeric_cols:
+        if col in data.columns:
+            data[col] = pd.to_numeric(data[col], errors="coerce")
+    data = data.dropna(subset=["OrderDate", "OrderID", "Sales", "Profit"])
+    return data
+
+with st.sidebar:
+    st.header("⚙️ Dashboard Controls")
+    uploaded_file = st.file_uploader("Upload Excel sales file (.xlsx)", type=["xlsx"])
+    st.markdown("---")
+    st.write("**Expected sheet:** `SalesData`")
+    st.write("**Expected columns:** OrderDate, OrderID, Product, Category, Region, Salesperson, Quantity, UnitPrice, UnitCost, Sales, TotalCost, Profit")
+
+df = load_data(uploaded_file)
+
+if df is None:
+    st.warning("Excel file dorakaledu. Download the practice Excel file and keep it in the same folder as app.py, or upload it using the sidebar.")
+    st.stop()
+
+# ---------- Sidebar filters ----------
+with st.sidebar:
+    st.subheader("🔎 Filters")
+    regions = sorted(df["Region"].dropna().unique().tolist())
+    selected_regions = st.multiselect("Select Region", regions, default=regions)
+
+    categories = sorted(df["Category"].dropna().unique().tolist())
+    selected_categories = st.multiselect("Select Category", categories, default=categories)
+
+    products = sorted(df["Product"].dropna().unique().tolist())
+    selected_products = st.multiselect("Select Product", products, default=products)
+
+    min_date = df["OrderDate"].min().date()
+    max_date = df["OrderDate"].max().date()
+    date_range = st.date_input(
+        "Order date range",
+        value=(min_date, max_date),
+        min_value=min_date,
+        max_value=max_date
+    )
+
+# Handle date picker when user selects only one date
+if isinstance(date_range, tuple) and len(date_range) == 2:
+    start_date, end_date = date_range
+elif isinstance(date_range, tuple) and len(date_range) == 1:
+    start_date = end_date = date_range[0]
+else:
+    start_date = end_date = date_range
+
+filtered = df[
+    df["Region"].isin(selected_regions)
+    & df["Category"].isin(selected_categories)
+    & df["Product"].isin(selected_products)
+    & (df["OrderDate"].dt.date >= start_date)
+    & (df["OrderDate"].dt.date <= end_date)
+].copy()
+
+if filtered.empty:
+    st.warning("No records match these filters. Please change the filters in the sidebar.")
+    st.stop()
+
+# ---------- KPIs ----------
+total_sales = filtered["Sales"].sum()
+total_profit = filtered["Profit"].sum()
+total_orders = filtered["OrderID"].nunique()
+total_quantity = filtered["Quantity"].sum()
+profit_margin = (total_profit / total_sales * 100) if total_sales else 0
+avg_order_value = (total_sales / total_orders) if total_orders else 0
+
+k1, k2, k3, k4, k5 = st.columns(5)
+k1.metric("💰 Total Sales", f"₹{total_sales:,.0f}")
+k2.metric("📈 Total Profit", f"₹{total_profit:,.0f}")
+k3.metric("🧾 Total Orders", f"{total_orders:,}")
+k4.metric("📦 Units Sold", f"{total_quantity:,.0f}")
+k5.metric("🎯 Profit Margin", f"{profit_margin:.1f}%")
+
+st.markdown("---")
+
+# ---------- Charts row 1 ----------
+left, right = st.columns(2)
+
+monthly = (
+    filtered.assign(Month=filtered["OrderDate"].dt.to_period("M").dt.to_timestamp())
+    .groupby("Month", as_index=False)
+    .agg(Sales=("Sales", "sum"), Profit=("Profit", "sum"))
+    .sort_values("Month")
+)
+with left:
+    st.subheader("📅 Monthly Sales Trend")
+    fig_month = px.line(
+        monthly, x="Month", y="Sales", markers=True,
+        title="Sales by Month", template="plotly_white"
+    )
+    fig_month.update_layout(xaxis_title="Month", yaxis_title="Sales (₹)")
+    st.plotly_chart(fig_month, use_container_width=True)
+
+with right:
+    st.subheader("🌎 Sales by Region")
+    region_sales = filtered.groupby("Region", as_index=False).agg(Sales=("Sales", "sum"))
+    fig_region = px.bar(
+        region_sales, x="Region", y="Sales", text_auto=".2s",
+        title="Revenue by Region", template="plotly_white"
+    )
+    fig_region.update_layout(xaxis_title="Region", yaxis_title="Sales (₹)")
+    st.plotly_chart(fig_region, use_container_width=True)
+
+# ---------- Charts row 2 ----------
+left, right = st.columns(2)
+with left:
+    st.subheader("🛍️ Sales by Product")
+    product_sales = (
+        filtered.groupby("Product", as_index=False)
+        .agg(Sales=("Sales", "sum"), Profit=("Profit", "sum"))
+        .sort_values("Sales", ascending=False)
+    )
+    fig_product = px.bar(
+        product_sales, x="Sales", y="Product", orientation="h",
+        title="Product Performance", template="plotly_white",
+        hover_data=["Profit"]
+    )
+    fig_product.update_layout(xaxis_title="Sales (₹)", yaxis_title="Product")
+    st.plotly_chart(fig_product, use_container_width=True)
+
+with right:
+    st.subheader("🧩 Sales by Category")
+    category_sales = filtered.groupby("Category", as_index=False).agg(Sales=("Sales", "sum"))
+    fig_category = px.pie(
+        category_sales, names="Category", values="Sales",
+        hole=0.45, title="Revenue Share by Category", template="plotly_white"
+    )
+    st.plotly_chart(fig_category, use_container_width=True)
+
+# ---------- Profit analysis ----------
+st.subheader("💹 Profit by Region and Category")
+profit_data = filtered.groupby(["Region", "Category"], as_index=False).agg(Profit=("Profit", "sum"))
+fig_profit = px.bar(
+    profit_data, x="Region", y="Profit", color="Category", barmode="group",
+    title="Profit Comparison", template="plotly_white"
+)
+fig_profit.update_layout(xaxis_title="Region", yaxis_title="Profit (₹)")
+st.plotly_chart(fig_profit, use_container_width=True)
+
+# ---------- Top products ----------
+st.subheader("🏆 Top 5 Products by Sales")
+top5 = product_sales.nlargest(5, "Sales")
+st.dataframe(top5.style.format({"Sales": "₹{:,.2f}", "Profit": "₹{:,.2f}"}), use_container_width=True, hide_index=True)
+
+# ---------- Raw data ----------
+with st.expander("📄 View filtered sales data"):
+    st.dataframe(filtered, use_container_width=True, hide_index=True)
+
+# ---------- Download filtered report ----------
+csv = filtered.to_csv(index=False).encode("utf-8")
+st.download_button(
+    label="⬇️ Download filtered data as CSV",
+    data=csv,
+    file_name="filtered_sales_report.csv",
+    mime="text/csv"
+)
+
+st.markdown("---")
+st.caption("Portfolio practice project. The included dataset contains synthetic sample data, not real company transactions.")
